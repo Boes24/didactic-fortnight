@@ -1,0 +1,33 @@
+# Enviroment settings
+.env
+
+# Binance
+Binance/binance-connector-python
+
+# Operativsystem
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Midlertidige filer
+*.tmp
+*.swp
+
+# Dependencies
+node_modules/
+vendor/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build output
+dist/
+build/
+
+# IDE / editor
+.vscode/
+.idea/

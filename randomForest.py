@@ -7,7 +7,7 @@ import Postgres
 from Token_model import Token
 
 
-def random_forest(xtrain, xtest, ytrain, ytest, use_smote=False):
+def random_forest(xtrain, xtest, ytrain, ytest, use_smote=False) -> RandomForestClassifier:
     print("Random Forest training...")
 
     # Valgfrit SMOTE for at håndtere ubalancerede data
@@ -37,7 +37,7 @@ def random_forest(xtrain, xtest, ytrain, ytest, use_smote=False):
     # Beregninger
     cm = confusion_matrix(ytest, y_pred)
 
-    # Smukt formateret confusion matrix
+    # Formateret confusion matrix
     cm_df = pd.DataFrame(
         cm,
         index=['Actual: 0', 'Actual: 1'],

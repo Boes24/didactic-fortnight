@@ -17,8 +17,8 @@ def check_and_execute(wallet:Wallet, db: Postgres, token: Token, db_time: int, r
     if latest_time != db_time:
         row: pd.DataFrame = latest_trading_data.to_frame().T
         if len(row) == 1:
-            prediction = token.model.predict(row)
-            if prediction[0] == 1:
+            prediction = token.model.predict(row)[0]
+            if prediction == 1:
                 close_price: float = float(row["closeprice"].iloc[0])
                 print(f"Buy {token.name} at {latest_time + db.convert_countdown_to_seconds()}\n - closing price: {close_price}")
                 wallet.update_wallet()

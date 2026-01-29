@@ -15,4 +15,3 @@ class Token:
         self.quantity_decimals = amount_decimals
         self.free = free
         self.locked = locked
-

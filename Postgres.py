@@ -35,7 +35,7 @@ class Postgres:
         self.__create_table_vwap__()
         self.__create_table_ema__()
         self.__create_functions__()
-        self.__create_indexes()
+        self.__create_indexes__()
         #self.__create_table_change_n_range()
 
     def init_table(self, api, token:Token, periods_to_sell:int):
@@ -53,8 +53,8 @@ class Postgres:
             self.execute_query(f"INSERT INTO token SELECT * FROM token_historic WHERE symbol = '{token.name}' ORDER BY klineopentime DESC LIMIT 1;")
 
 
-    def read_sql(self, sql:str):
-        return pd.read_sql(sql, self.engine)
+    def read_sql(self, sql_query:str):
+        return pd.read_sql(sql_query, self.engine)
 
     def execute_query(self, query):
         with self.engine.begin() as conn:
@@ -137,6 +137,69 @@ class Postgres:
         with self.engine.begin() as conn:
             return conn.execute(text(f"INSERT INTO public.{table_name} VALUES {values_sql};"))
 
+    def __init_table_with_data__(self, api:BinanceAPI, token:Token):
+        print("Load data into table", token.name)
+        with self.engine.begin() as conn:
+            db_data = self.read_sql(f"select klineopentime from token_historic where symbol = '{token.name}' order by klineopentime desc limit 1")
+            if db_data is not None:
+                #init the database
+                ##Check if data is stored in cold storage
+                cold_storage_data = self.read_sql(f"select * from token_historic where symbol = '{token.name}' order by klineopentime limit 1")
+                if not cold_storage_data.empty:
+                    print("Found data in cold storage! Update that bastard")
+                    while True:
+                        print("Updating...")
+                        if self.update_table(api=api,token=token, table_name="token_historic") is None:
+                            print("No more klines to update")
+                            break
+
+
+                else:
+                    print("Load the data from Binance")
+                    tmp_start_time = api.get_candlesticks(symbol=f"{token.name}", interval=api.KlinesInterval(self.time_interval), start_time=0, limit=1).data()[0][0] // 1000
+                    current_time = int(time.time())
+                    while current_time > tmp_start_time:
+                        end_time = tmp_start_time + self.convert_countdown_to_seconds()*1000
+                        sticks = api.get_candlesticks(symbol=f"{token.name}", interval=api.KlinesInterval(self.time_interval), start_time=tmp_start_time, end_time=end_time)
+
+                        values_sql = ", ".join(
+                            f"('{token.name}', {str(stick[0])[:-3]}, {truncate_decimals(stick[1], token.price_decimals)}, {truncate_decimals(stick[2], token.price_decimals)}, {truncate_decimals(stick[3], token.price_decimals)}, {truncate_decimals(stick[4], token.price_decimals)},"
+                            f"{truncate_decimals(stick[5],2)}, {truncate_decimals(stick[7],5)}, {stick[8]}, {truncate_decimals(stick[9],1)}, {truncate_decimals(stick[10],5)})"
+                            for stick in sticks.data()
+                        )
+
+                        if values_sql == "":
+                            tmp_start_time += self.convert_countdown_to_seconds() * 1000
+                            continue
+
+                        sql = f"""
+                        INSERT INTO public.token_historic
+                        (symbol, klineopentime, openprice, highprice, lowprice, closeprice, volume, quoteassetvolume, numberoftrades, takerbuybaseassetvolume, takerbuyquoteassetvolume)
+                        VALUES {values_sql}
+                        ON CONFLICT (symbol, klineopentime) DO UPDATE SET
+                        openprice = EXCLUDED.openprice,
+                        highprice = EXCLUDED.highprice,
+                        lowprice = EXCLUDED.lowprice,
+                        closeprice = EXCLUDED.closeprice,
+                        volume = EXCLUDED.volume,
+                        quoteassetvolume = EXCLUDED.quoteassetvolume,
+                        numberoftrades = EXCLUDED.numberoftrades,
+                        takerbuybaseassetvolume = EXCLUDED.takerbuybaseassetvolume,
+                        takerbuyquoteassetvolume = EXCLUDED.takerbuyquoteassetvolume;
+                        """
+                        conn.execute(text(sql))
+                        tmp_start_time += self.convert_countdown_to_seconds()*1000
+
+                    conn.execute(text(f"DELETE FROM token_sma WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
+                    conn.execute(text(f"DELETE FROM token_ema WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
+                    conn.execute(text(f"DELETE FROM token_vwap WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
+                    conn.execute(text(f"DELETE FROM token_rsi WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
+                    conn.execute(text(f"DELETE FROM token_historic WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
+
+
+            else :
+                print(f"token is already initialized")
+            print(f"token is initialized")
 
     def __create_functions__(self):
         print("Create functions")
@@ -471,7 +534,7 @@ class Postgres:
 
             conn.execute(text(sql))
 
-    def __create_indexes(self):
+    def __create_indexes__(self):
         sql = f"""
         CREATE INDEX IF NOT EXISTS token_historic_symbol_kline_idx ON token_historic (symbol, klineopentime);
         CREATE INDEX IF NOT EXISTS token_historic_symbol_kline_idx_desc ON token_historic (symbol, klineopentime desc);
@@ -1063,69 +1126,6 @@ class Postgres:
 
 
 
-    def __init_table_with_data__(self, api:BinanceAPI, token:Token):
-        print("Load data into table", token.name)
-        with self.engine.begin() as conn:
-            db_data = self.read_sql(f"select klineopentime from token_historic where symbol = '{token.name}' order by klineopentime desc limit 1")
-            if db_data is not None:
-                #init the database
-                ##Check if data is stored in cold storage
-                cold_storage_data = self.read_sql(f"select * from token_historic where symbol = '{token.name}' order by klineopentime limit 1")
-                if not cold_storage_data.empty:
-                    print("Found data in cold storage! Update that bastard")
-                    while True:
-                        print("Updating...")
-                        if self.update_table(api=api,token=token, table_name="token_historic") is None:
-                            print("No more klines to update")
-                            break
-
-
-                else:
-                    print("Load the data from Binance")
-                    tmp_start_time = api.get_candlesticks(symbol=f"{token.name}", interval=api.KlinesInterval(self.time_interval), start_time=0, limit=1).data()[0][0] // 1000
-                    current_time = int(time.time())
-                    while current_time > tmp_start_time:
-                        end_time = tmp_start_time + self.convert_countdown_to_seconds()*1000
-                        sticks = api.get_candlesticks(symbol=f"{token.name}", interval=api.KlinesInterval(self.time_interval), start_time=tmp_start_time, end_time=end_time)
-
-                        values_sql = ", ".join(
-                            f"('{token.name}', {str(stick[0])[:-3]}, {truncate_decimals(stick[1], token.price_decimals)}, {truncate_decimals(stick[2], token.price_decimals)}, {truncate_decimals(stick[3], token.price_decimals)}, {truncate_decimals(stick[4], token.price_decimals)},"
-                            f"{truncate_decimals(stick[5],2)}, {truncate_decimals(stick[7],5)}, {stick[8]}, {truncate_decimals(stick[9],1)}, {truncate_decimals(stick[10],5)})"
-                            for stick in sticks.data()
-                        )
-
-                        if values_sql == "":
-                            tmp_start_time += self.convert_countdown_to_seconds() * 1000
-                            continue
-
-                        sql = f"""
-                        INSERT INTO public.token_historic
-                        (symbol, klineopentime, openprice, highprice, lowprice, closeprice, volume, quoteassetvolume, numberoftrades, takerbuybaseassetvolume, takerbuyquoteassetvolume)
-                        VALUES {values_sql}
-                        ON CONFLICT (symbol, klineopentime) DO UPDATE SET
-                        openprice = EXCLUDED.openprice,
-                        highprice = EXCLUDED.highprice,
-                        lowprice = EXCLUDED.lowprice,
-                        closeprice = EXCLUDED.closeprice,
-                        volume = EXCLUDED.volume,
-                        quoteassetvolume = EXCLUDED.quoteassetvolume,
-                        numberoftrades = EXCLUDED.numberoftrades,
-                        takerbuybaseassetvolume = EXCLUDED.takerbuybaseassetvolume,
-                        takerbuyquoteassetvolume = EXCLUDED.takerbuyquoteassetvolume;
-                        """
-                        conn.execute(text(sql))
-                        tmp_start_time += self.convert_countdown_to_seconds()*1000
-
-                    conn.execute(text(f"DELETE FROM token_sma WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
-                    conn.execute(text(f"DELETE FROM token_ema WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
-                    conn.execute(text(f"DELETE FROM token_vwap WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
-                    conn.execute(text(f"DELETE FROM token_rsi WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
-                    conn.execute(text(f"DELETE FROM token_historic WHERE klineopentime = (SELECT klineopentime FROM token_historic ORDER BY klineopentime desc LIMIT 1) AND symbol = '{token.name}';"))
-
-
-            else :
-                print(f"token is already initialized")
-            print(f"token is initialized")
 
     def convert_countdown_to_seconds(self):
         count_down = self.time_interval.lower()
